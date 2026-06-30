@@ -1,4 +1,37 @@
 // backend/socket-manager.js
+import { config } from './config.js';
+
+// In-memory store mapping transport IDs to their instances
+const transports = new Map();
+
+// Helper to create a WebRtcTransport on the server router
+const createMediaSoupWebRtcTransport = async (router) => {
+  const { listenInfos, initialAvailableOutgoingBitrate } = config.webRtcTransport;
+
+  const transport = await router.createWebRtcTransport({
+    listenInfos,
+    enableUdp: true,
+    enableTcp: true,
+    preferUdp: true,
+    initialAvailableOutgoingBitrate,
+  });
+
+  // Handle production optimization/cleanup events
+  transport.on('dtlsstatechange', (dtlsState) => {
+    if (dtlsState === 'closed') {
+      console.log(`[MediaSoup] Transport ${transport.id} DTLS closed.`);
+      transport.close();
+      transports.delete(transport.id);
+    }
+  });
+
+  transport.on('@close', () => {
+    console.log(`[MediaSoup] Transport ${transport.id} closed.`);
+    transports.delete(transport.id);
+  });
+
+  return transport;
+};
 
 export const initializeSocketSignaling = (io, { mediasoupRouter }) => {
   io.on('connection', (socket) => {
@@ -19,20 +52,28 @@ export const initializeSocketSignaling = (io, { mediasoupRouter }) => {
       });
     };
 
-    // --- STEP 2.1: MediaSoup Signaling Endpoints Placeholder ---
-    
-    // Example endpoint 1: Get Router Capabilities (Client needs this to initialize device)
+    // get router capabilities handler
     handleEvent('getRouterRtpCapabilities', async () => {
       return mediasoupRouter.rtpCapabilities;
     });
 
-    // Example endpoint 2: Create WebRTC Transport
+    // get transport params handler
     handleEvent('createWebRtcTransport', async (data, clientSocket) => {
-      // MediaSoup logic goes here later
-      return { message: "Transport placeholder" };
-    });
+      const transport = await createMediaSoupWebRtcTransport(mediasoupRouter);
+      
+      // Store reference using unique ID
+      transports.set(transport.id, transport);
 
-    // --- End of Placeholders ---
+      console.log(`[MediaSoup] Server Send Transport created: ${transport.id}`);
+
+      // Extract parameters required by client-side Device to bind
+      return {
+        id: transport.id,
+        iceParameters: transport.iceParameters,
+        iceCandidates: transport.iceCandidates,
+        dtlsParameters: transport.dtlsParameters,
+      };
+    });
 
     socket.on('disconnect', () => {
       console.log(`[Signaling] Client disconnected: ${socket.id}`);
