@@ -6,20 +6,17 @@ export const ControlPanel = ({
   connectionStatus, 
   deviceStatus, 
   transportStatus,
+  recvTransportStatus,
   mediaStatus, 
   onInitializeDevice, 
   onCreateSendTransport,
-  onConnectAndProduceStream
+  onConnectAndProduceStream,
+  onCreateRecvTransport
 }) => {
   return (
     <div className="bg-slate-800 rounded-xl p-5 border border-slate-700 h-fit space-y-4 shadow-lg">
       <h2 className="text-lg font-bold border-b border-slate-700 pb-2 text-slate-200">Control Interface</h2>
       
-      <div>
-        <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Tunnel Link</label>
-        <div className="text-sm font-mono bg-slate-950 p-2 rounded border border-slate-800 text-indigo-300 truncate">{serverUrl}</div>
-      </div>
-
       <div className="grid grid-cols-2 gap-2 text-xs">
         <div>
           <span className="text-slate-400 block font-semibold uppercase mb-0.5">Signaling</span>
@@ -33,12 +30,12 @@ export const ControlPanel = ({
 
       <div className="grid grid-cols-2 gap-2 text-xs">
         <div>
-          <span className="text-slate-400 block font-semibold uppercase mb-0.5">Transport</span>
+          <span className="text-slate-400 block font-semibold uppercase mb-0.5">Send Pipe</span>
           <span className="font-medium text-sm block text-indigo-400">{transportStatus}</span>
         </div>
         <div>
-          <span className="text-slate-400 block font-semibold uppercase mb-0.5">Media Pipeline</span>
-          <span className="font-medium text-sm block text-amber-400">{mediaStatus}</span>
+          <span className="text-slate-400 block font-semibold uppercase mb-0.5">Recv Pipe</span>
+          <span className="font-medium text-sm block text-pink-400">{recvTransportStatus}</span>
         </div>
       </div>
 
@@ -59,10 +56,20 @@ export const ControlPanel = ({
         </button>
         <button
           onClick={onConnectAndProduceStream}
-          className="w-full bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-medium text-sm py-2.5 px-4 rounded-lg transition shadow-md shadow-emerald-900/20"
+          disabled={mediaStatus === 'Connected & Streaming'}
+          className="w-full disabled:opacity-40 bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-sm py-2 px-4 rounded-lg transition"
         >
-          3. Produce Media & Connect DTLS
+          3. Produce Media
         </button>
+        
+        <div className="border-t border-slate-700 my-2 pt-2">
+          <button
+            onClick={onCreateRecvTransport}
+            className="w-full bg-pink-600 hover:bg-pink-500 active:bg-pink-700 text-white font-medium text-sm py-2.5 px-4 rounded-lg transition shadow-md shadow-pink-900/20"
+          >
+            4. Create Recv Transport
+          </button>
+        </div>
       </div>
     </div>
   );

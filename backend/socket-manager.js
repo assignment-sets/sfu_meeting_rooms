@@ -117,6 +117,24 @@ export const initializeSocketSignaling = (io, { mediasoupRouter }) => {
       return { id: producer.id };
     });
 
+    handleEvent('createRecvTransport', async () => {
+      // Allocate another distinct WebRtcTransport instance from the router
+      const transport = await createMediaSoupWebRtcTransport(mediasoupRouter);
+      
+      // Store reference in our existing global map
+      transports.set(transport.id, transport);
+      
+      console.log(`[MediaSoup] Server Receive Transport created: ${transport.id}`);
+      
+      // Return the credentials so the client device can hook onto it
+      return {
+        id: transport.id,
+        iceParameters: transport.iceParameters,
+        iceCandidates: transport.iceCandidates,
+        dtlsParameters: transport.dtlsParameters,
+      };
+    });
+
     socket.on('disconnect', () => {
       console.log(`[Signaling] Client disconnected: ${socket.id}`);
     });
