@@ -4,6 +4,7 @@ import { config } from './config.js';
 // In-memory store mapping transport IDs to their instances
 const transports = new Map();
 const producers = new Map();
+const consumers = new Map();
 
 // Helper to create a WebRtcTransport on the server router
 const createMediaSoupWebRtcTransport = async (router) => {
@@ -133,6 +134,58 @@ export const initializeSocketSignaling = (io, { mediasoupRouter }) => {
         iceCandidates: transport.iceCandidates,
         dtlsParameters: transport.dtlsParameters,
       };
+    });
+
+    handleEvent('consumeMediaStream', async (data) => {
+      const { transportId, producerId, rtpCapabilities } = data;
+
+      // 1. Find the receive transport we made in the previous sprint
+      const transport = transports.get(transportId);
+      if (!transport) throw new Error('Receive transport not found');
+
+      // 2. Check if the router can route this specific producer to this specific browser
+      const canConsume = mediasoupRouter.canConsume({ producerId, rtpCapabilities });
+      if (!canConsume) {
+        throw new Error(`Cannot consume producer ${producerId} with provided RTP capabilities`);
+      }
+
+      // 3. Create the server-side Consumer instance on our receive transport
+      const consumer = await transport.consume({
+        producerId,
+        rtpCapabilities,
+        paused: true, // Crucial: MediaSoup forces consumers to start paused for sync safety
+      });
+
+      // 4. Store the consumer instance reference
+      consumers.set(consumer.id, consumer);
+      console.log(`[MediaSoup] Server Consumer allocated! ID: ${consumer.id} [Kind: ${consumer.kind}]`);
+
+      consumer.on('transportclose', () => {
+        consumer.close();
+        consumers.delete(consumer.id);
+      });
+
+      // 5. Send parameters down so client-side device engine can map the track
+      return {
+        id: consumer.id,
+        producerId,
+        kind: consumer.kind,
+        rtpParameters: consumer.rtpParameters,
+      };
+    });
+
+    handleEvent('resumeConsumer', async (data) => {
+      const { consumerId } = data;
+      const consumer = consumers.get(consumerId);
+
+      if (!consumer) {
+        throw new Error(`Server-side Consumer with ID ${consumerId} not found.`);
+      }
+
+      // Unfreeze the RTP packet pipe
+      await consumer.resume();
+      console.log(`[MediaSoup] Consumer ${consumerId} resumed. Packets are now flowing.`);
+      return true;
     });
 
     socket.on('disconnect', () => {

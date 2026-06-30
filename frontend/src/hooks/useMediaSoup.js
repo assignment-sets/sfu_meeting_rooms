@@ -7,7 +7,7 @@ export const useMediaSoup = (serverUrl) => {
   const [connectionStatus, setConnectionStatus] = useState('Disconnected');
   const [deviceStatus, setDeviceStatus] = useState('Uninitialized');
   const [transportStatus, setTransportStatus] = useState('Not Created');
-  const [recvTransportStatus, setRecvTransportStatus] = useState('Not Created'); // New State
+  const [recvTransportStatus, setRecvTransportStatus] = useState('Not Created');
   const [mediaStatus, setMediaStatus] = useState('No Media');
   const [logs, setLogs] = useState([]);
   const [errorLog, setErrorLog] = useState('');
@@ -15,8 +15,11 @@ export const useMediaSoup = (serverUrl) => {
   const socketRef = useRef(null);
   const deviceRef = useRef(null);
   const producerTransportRef = useRef(null);
-  const consumerTransportRef = useRef(null); // New Ref
+  const consumerTransportRef = useRef(null);
   const localStreamRef = useRef(null);
+
+  // New ref to store our generated consumer track 
+  const remoteTrackRef = useRef(null);
 
   const addLog = (message, type = 'info') => {
     const timestamp = new Date().toLocaleTimeString();
@@ -30,7 +33,6 @@ export const useMediaSoup = (serverUrl) => {
     return () => socketInstance.disconnect();
   }, [serverUrl]);
 
-  // Sprint 1
   const initializeDevice = () => {
     const socket = socketRef.current;
     setDeviceStatus('Fetching RTP Capabilities...');
@@ -46,28 +48,19 @@ export const useMediaSoup = (serverUrl) => {
     });
   };
 
-  // Sprint 2
   const createSendTransport = () => {
     const socket = socketRef.current;
     if (!deviceRef.current) return;
-    setTransportStatus('Creating on server...');
     socket.emit('createWebRtcTransport', {}, async (response) => {
       if (!response.success) { setErrorLog(response.error); return; }
       try {
         const transport = deviceRef.current.createSendTransport(response.data);
-        
         transport.on('connect', async ({ dtlsParameters }, callback, errback) => {
-          socket.emit('connectWebRtcTransport', { transportId: transport.id, dtlsParameters }, (serverResp) => {
-            if (serverResp.success) { callback(); } else { errback(new Error(serverResp.error)); }
-          });
+          socket.emit('connectWebRtcTransport', { transportId: transport.id, dtlsParameters }, (res) => res.success ? callback() : errback(new Error(res.error)));
         });
-
         transport.on('produce', async ({ kind, rtpParameters }, callback, errback) => {
-          socket.emit('produceMediaStream', { transportId: transport.id, kind, rtpParameters }, (serverResp) => {
-            if (serverResp.success) { callback({ id: serverResp.data.id }); } else { errback(new Error(serverResp.error)); }
-          });
+          socket.emit('produceMediaStream', { transportId: transport.id, kind, rtpParameters }, (res) => res.success ? callback({ id: res.data.id }) : errback(new Error(res.error)));
         });
-
         producerTransportRef.current = transport;
         setTransportStatus('Initialized & Live');
         addLog('Send Transport initialized locally.', 'success');
@@ -75,7 +68,6 @@ export const useMediaSoup = (serverUrl) => {
     });
   };
 
-  // Sprint 3
   const connectAndProduceStream = async () => {
     if (!producerTransportRef.current) return;
     try {
@@ -88,47 +80,22 @@ export const useMediaSoup = (serverUrl) => {
     } catch (error) { setErrorLog(error.message); }
   };
 
-
-  // ==========================================================
-  // NEW SPRINT: CLIENT RECEIVE TRANSPORT CREATION
-  // ==========================================================
   const createRecvTransport = () => {
     const socket = socketRef.current;
-    if (!deviceRef.current) {
-      setErrorLog('Initialize MediaSoup Device engine first.');
-      return;
-    }
-
-    setRecvTransportStatus('Creating on server...');
-    addLog('Emitting "createRecvTransport" to backend...', 'info');
-
+    if (!deviceRef.current) return;
     socket.emit('createRecvTransport', {}, async (response) => {
-      if (!response.success) {
-        setErrorLog(`Server failed to allocate receiver: ${response.error}`);
-        setRecvTransportStatus('Failed');
-        return;
-      }
-
-      const transportParams = response.data;
-      addLog(`Received server receive parameters. ID: ${transportParams.id}`, 'success');
-
+      if (!response.success) { setErrorLog(response.error); return; }
       try {
-        // Create the client side RECEIVE counterpart instead of Send
-        const transport = deviceRef.current.createRecvTransport(transportParams);
+        const transport = deviceRef.current.createRecvTransport(response.data);
 
-        // This listener fires automatically the first time we call transport.consume()
+        // This is lazy. It triggers only when we call transport.consume()
         transport.on('connect', async ({ dtlsParameters }, callback, errback) => {
-          addLog('[Recv Transport] Local "connect" event triggered. Sending DTLS to server...', 'warning');
-          
-          socket.emit('connectWebRtcTransport', {
-            transportId: transport.id,
-            dtlsParameters
-          }, (serverResp) => {
+          addLog('[Recv Transport] Handshake initiated! Pushing DTLS keys to backend...', 'warning');
+          socket.emit('connectWebRtcTransport', { transportId: transport.id, dtlsParameters }, (serverResp) => {
             if (serverResp.success) {
-              addLog('[Recv Transport] Server acknowledged DTLS connection.', 'success');
+              addLog('[Recv Transport] DTLS Pipe linked and locked.', 'success');
               callback();
             } else {
-              addLog(`[Recv Transport] DTLS connection rejected: ${serverResp.error}`, 'error');
               errback(new Error(serverResp.error));
             }
           });
@@ -136,11 +103,67 @@ export const useMediaSoup = (serverUrl) => {
 
         consumerTransportRef.current = transport;
         setRecvTransportStatus('Initialized & Live');
-        addLog(`Client Receive Transport bound successfully! ID: ${transport.id}`, 'success');
-        setErrorLog('');
+        addLog('Receive Transport initialized locally.', 'success');
+      } catch (error) { setErrorLog(error.message); }
+    });
+  };
+
+  const consumeStream = (targetProducerId) => {
+    const socket = socketRef.current;
+    if (!consumerTransportRef.current) {
+      setErrorLog('Cannot consume: Create your receive transport first.');
+      return;
+    }
+    if (!targetProducerId.trim()) {
+      setErrorLog('Please enter a valid Producer ID in the input box.');
+      return;
+    }
+
+    addLog(`Requesting consumption for Producer ID: ${targetProducerId}`, 'info');
+
+    socket.emit('consumeMediaStream', {
+      transportId: consumerTransportRef.current.id,
+      producerId: targetProducerId,
+      rtpCapabilities: deviceRef.current.rtpCapabilities
+    }, async (response) => {
+      if (!response.success) {
+        setErrorLog(`Server failed to instantiate consumer: ${response.error}`);
+        addLog(`Server rejected consumer allocation: ${response.error}`, 'error');
+        return;
+      }
+
+      const consumerParams = response.data;
+      addLog(`Consumer parameters received from server. ID: ${consumerParams.id}`, 'success');
+
+      try {
+        // 1. Initialize local representation of consumer (Triggers lazy connect)
+        const consumer = await consumerTransportRef.current.consume(consumerParams);
+        const { track } = consumer;
+        remoteTrackRef.current = track;
+
+        addLog(`Client-side Consumer engine online. Track Type: [${consumer.kind}]`, 'success');
+
+        // 2. NEW: Fire the resume call to the server to unpause packet generation
+        addLog(`Requesting server to resume consumer pipeline...`, 'info');
+        socket.emit('resumeConsumer', { consumerId: consumer.id }, (resumeResp) => {
+          if (resumeResp.success) {
+            addLog(`[MediaSoup] Server unpaused stream packet transmission!`, 'success');
+
+            // 3. Bind the active track to a stream and mount it to the window
+            const remoteStream = new MediaStream([track]);
+            window.latestRemoteStream = remoteStream;
+
+            setErrorLog('');
+            addLog('🚀 SUCCESS! Live stream packet pipe verified.', 'success');
+          } else {
+            setErrorLog(`Failed to resume consumer: ${resumeResp.error}`);
+            addLog(`Server failed to resume consumer: ${resumeResp.error}`, 'error');
+          }
+        });
+
       } catch (error) {
-        setErrorLog(`Receive Transport Error: ${error.message}`);
-        setRecvTransportStatus('Failed');
+        setErrorLog(`Client Consumer Error: ${error.message}`);
+        addLog(`Client consumer engine failed: ${error.message}`, 'error');
       }
     });
   };
@@ -149,13 +172,15 @@ export const useMediaSoup = (serverUrl) => {
     connectionStatus,
     deviceStatus,
     transportStatus,
-    recvTransportStatus, // Expose status
+    recvTransportStatus,
     mediaStatus,
     logs,
     errorLog,
     initializeDevice,
     createSendTransport,
     connectAndProduceStream,
-    createRecvTransport // Expose method
+    createRecvTransport,
+    consumeStream, // Export to UI
+    localStreamRef
   };
 };
