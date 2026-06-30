@@ -11,19 +11,21 @@ function App() {
     connectionStatus,
     deviceStatus,
     transportStatus,
+    mediaStatus,
     logs,
     errorLog,
     initializeDevice,
     createSendTransport,
+    connectAndProduceStream
   } = useMediaSoup(SIGNALING_SERVER_URL);
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 font-sans p-6">
       <header className="max-w-5xl mx-auto mb-8 border-b border-slate-800 pb-4">
         <h1 className="text-3xl font-extrabold tracking-tight text-indigo-400">
-          MediaSoup Engine Integration <span className="text-sm font-normal text-slate-400 bg-slate-800 px-2 py-1 rounded ml-2">Modular Structure</span>
+          MediaSoup Engine Integration <span className="text-sm font-normal text-slate-400 bg-slate-800 px-2 py-1 rounded ml-2">Sprint 3</span>
         </h1>
-        <p className="text-slate-400 mt-1">WebRTC Architecture</p>
+        <p className="text-slate-400 mt-1">DTLS Pipeline Verification Loop</p>
       </header>
 
       <main className="max-w-5xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -32,8 +34,10 @@ function App() {
           connectionStatus={connectionStatus}
           deviceStatus={deviceStatus}
           transportStatus={transportStatus}
+          mediaStatus={mediaStatus}
           onInitializeDevice={initializeDevice}
           onCreateSendTransport={createSendTransport}
+          onConnectAndProduceStream={connectAndProduceStream}
         />
 
         <div className="md:col-span-2 flex flex-col space-y-4">

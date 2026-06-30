@@ -7,12 +7,14 @@ export const useMediaSoup = (serverUrl) => {
   const [connectionStatus, setConnectionStatus] = useState('Disconnected');
   const [deviceStatus, setDeviceStatus] = useState('Uninitialized');
   const [transportStatus, setTransportStatus] = useState('Not Created');
+  const [mediaStatus, setMediaStatus] = useState('No Media');
   const [logs, setLogs] = useState([]);
   const [errorLog, setErrorLog] = useState('');
 
   const socketRef = useRef(null);
   const deviceRef = useRef(null);
   const producerTransportRef = useRef(null);
+  const localStreamRef = useRef(null);
 
   const addLog = (message, type = 'info') => {
     const timestamp = new Date().toLocaleTimeString();
@@ -20,120 +22,152 @@ export const useMediaSoup = (serverUrl) => {
   };
 
   useEffect(() => {
-    addLog(`Connecting to signaling server at: ${serverUrl}`, 'info');
-    
     const socketInstance = io(serverUrl, { transports: ['websocket'] });
     socketRef.current = socketInstance;
 
     socketInstance.on('connect', () => {
       setConnectionStatus('Connected');
-      addLog(`Signaling socket connected successfully! ID: ${socketInstance.id}`, 'success');
+      addLog('Signaling socket connected.', 'success');
     });
 
     socketInstance.on('connect_error', (err) => {
       setConnectionStatus('Connection Error');
-      setErrorLog(`Socket Connection Failed: ${err.message}`);
-      addLog(`Socket error: ${err.message}`, 'error');
+      setErrorLog(`Socket Failed: ${err.message}`);
     });
 
-    socketInstance.on('disconnect', () => {
-      setConnectionStatus('Disconnected');
-      addLog('Signaling socket disconnected.', 'warning');
-    });
-
-    return () => {
-      socketInstance.disconnect();
-    };
+    return () => socketInstance.disconnect();
   }, [serverUrl]);
 
   const initializeDevice = () => {
     const socket = socketRef.current;
-    if (!socket || !socket.connected) {
-      setErrorLog('Cannot initialize: Socket signaling channel is not active.');
-      return;
-    }
-
     setDeviceStatus('Fetching RTP Capabilities...');
-    addLog('Emitting "getRouterRtpCapabilities" to backend...', 'info');
-
+    
     socket.emit('getRouterRtpCapabilities', {}, async (response) => {
       if (!response.success) {
-        setErrorLog(`Failed to get capabilities: ${response.error}`);
-        setDeviceStatus('Failed');
-        addLog(`Server rejected RTP capabilities request: ${response.error}`, 'error');
+        setErrorLog(response.error);
         return;
       }
-
       try {
         const device = new mediasoupClient.Device();
         await device.load({ routerRtpCapabilities: response.data });
-        
         deviceRef.current = device;
         setDeviceStatus('Loaded & Ready');
-        addLog(`Device loaded successfully. Handler: ${device.handlerName}`, 'success');
-        setErrorLog('');
+        addLog('Device loaded successfully.', 'success');
       } catch (error) {
-        setErrorLog(`Device Engine Error: ${error.message}`);
-        setDeviceStatus('Failed');
-        addLog(`Device loading failed: ${error.message}`, 'error');
+        setErrorLog(error.message);
       }
     });
   };
 
   const createSendTransport = () => {
     const socket = socketRef.current;
-    if (!deviceRef.current) {
-      setErrorLog('Cannot create transport: Initialize MediaSoup Device engine first.');
-      return;
-    }
+    if (!deviceRef.current) return;
 
-    setTransportStatus('Requesting server creation...');
-    addLog('Emitting "createWebRtcTransport" to backend...', 'info');
-
+    setTransportStatus('Creating on server...');
     socket.emit('createWebRtcTransport', {}, async (response) => {
       if (!response.success) {
-        setErrorLog(`Server failed to allocate transport: ${response.error}`);
-        setTransportStatus('Failed');
-        addLog(`Server rejected transport allocation: ${response.error}`, 'error');
+        setErrorLog(response.error);
         return;
       }
 
-      const transportParams = response.data;
-      addLog(`Received server transport parameters. ID: ${transportParams.id}`, 'success');
-
       try {
-        const transport = deviceRef.current.createSendTransport(transportParams);
+        const transport = deviceRef.current.createSendTransport(response.data);
 
-        // Placeholders for subsequent sprints
+        // DTLS Connection Hook
         transport.on('connect', async ({ dtlsParameters }, callback, errback) => {
-          addLog('[Transport Engine] Hook "connect" triggered.', 'warning');
-          callback();
+          addLog('[Transport Engine] Local "connect" event. Negotiating DTLS handshake...', 'warning');
+          
+          socket.emit('connectWebRtcTransport', {
+            transportId: transport.id,
+            dtlsParameters
+          }, (serverResp) => {
+            if (serverResp.success) {
+              addLog('[Transport Engine] Server acknowledged DTLS connection.', 'success');
+              callback();
+            } else {
+              addLog(`[Transport Engine] DTLS connection rejected: ${serverResp.error}`, 'error');
+              errback(new Error(serverResp.error));
+            }
+          });
         });
 
-        transport.on('produce', async ({ kind, rtpParameters, appData }, callback, errback) => {
-          addLog('[Transport Engine] Hook "produce" triggered.', 'warning');
-          callback({ id: 'dummy-producer-id' });
+        // FINAL SEND SPRINT LOGIC: Catch client-side produce event and pipe parameters to backend
+        transport.on('produce', async ({ kind, rtpParameters }, callback, errback) => {
+          addLog(`[Transport Engine] Local "produce" event caught for track type [${kind}]. Requesting backend allocation...`, 'warning');
+          
+          socket.emit('produceMediaStream', {
+            transportId: transport.id,
+            kind,
+            rtpParameters
+          }, (serverResp) => {
+            if (serverResp.success) {
+              const { id } = serverResp.data;
+              addLog(`[Transport Engine] Server allocated live Producer! Confirmed ID: ${id}`, 'success');
+              callback({ id }); // Pass the real ID back to complete local runtime sequence
+            } else {
+              addLog(`[Transport Engine] Server rejected production parameters: ${serverResp.error}`, 'error');
+              errback(new Error(serverResp.error));
+            }
+          });
         });
 
         producerTransportRef.current = transport;
         setTransportStatus('Initialized & Live');
-        addLog(`Client Send Transport bound successfully! ID: ${transport.id}`, 'success');
-        setErrorLog('');
+        addLog('Send Transport initialized locally.', 'success');
       } catch (error) {
-        setErrorLog(`Transport Creation Error: ${error.message}`);
-        setTransportStatus('Failed');
-        addLog(`Client side instantiation crashed: ${error.message}`, 'error');
+        setErrorLog(error.message);
       }
     });
+  };
+
+  const connectAndProduceStream = async () => {
+    if (!producerTransportRef.current) {
+      setErrorLog('Cannot produce: Create your send transport first.');
+      return;
+    }
+
+    try {
+      setMediaStatus('Accessing hardware devices...');
+      addLog('Requesting browser media tracks...', 'info');
+      
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: true
+      });
+      
+      localStreamRef.current = stream;
+      setMediaStatus('Media Acquired');
+      addLog('Hardware access granted.', 'success');
+
+      const videoTrack = stream.getVideoTracks()[0];
+      const audioTrack = stream.getAudioTracks()[0];
+
+      // Kicks off the cascade logic: connect hook -> produce hook
+      addLog('Executing transport.produce() for Video track...', 'info');
+      await producerTransportRef.current.produce({ track: videoTrack });
+      
+      addLog('Executing transport.produce() for Audio track...', 'info');
+      await producerTransportRef.current.produce({ track: audioTrack });
+
+      setMediaStatus('Connected & Streaming');
+      addLog('Production lifecycle sequence executed successfully.', 'success');
+    } catch (error) {
+      console.error(error);
+      setErrorLog(`Media Production Error: ${error.message}`);
+      setMediaStatus('Failed');
+      addLog(`Stream production crashed: ${error.message}`, 'error');
+    }
   };
 
   return {
     connectionStatus,
     deviceStatus,
     transportStatus,
+    mediaStatus,
     logs,
     errorLog,
     initializeDevice,
-    createSendTransport
+    createSendTransport,
+    connectAndProduceStream
   };
 };

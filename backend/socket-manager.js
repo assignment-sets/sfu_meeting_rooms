@@ -3,6 +3,7 @@ import { config } from './config.js';
 
 // In-memory store mapping transport IDs to their instances
 const transports = new Map();
+const producers = new Map();
 
 // Helper to create a WebRtcTransport on the server router
 const createMediaSoupWebRtcTransport = async (router) => {
@@ -73,6 +74,47 @@ export const initializeSocketSignaling = (io, { mediasoupRouter }) => {
         iceCandidates: transport.iceCandidates,
         dtlsParameters: transport.dtlsParameters,
       };
+    });
+
+    // DTLS handshake handler
+    handleEvent('connectWebRtcTransport', async (data) => {
+      const { transportId, dtlsParameters } = data;
+      const transport = transports.get(transportId);
+
+      if (!transport) {
+        throw new Error(`Server-side transport with ID ${transportId} not found.`);
+      }
+
+      // Secure the connection by linking DTLS parameters
+      await transport.connect({ dtlsParameters });
+      console.log(`[MediaSoup] Transport ${transportId} successfully connected to DTLS.`);
+      return true;
+    });
+    // create mediasoup mediaProducer on server event handler
+    handleEvent('produceMediaStream', async (data) => {
+      const { transportId, kind, rtpParameters } = data;
+      const transport = transports.get(transportId);
+      if (!transport) throw new Error('Transport not found');
+
+      // Instruct server transport to start receiving this RTP stream blueprint
+      const producer = await transport.produce({
+        kind,
+        rtpParameters,
+      });
+
+      // Keep reference to track state
+      producers.set(producer.id, producer);
+
+      console.log(`[MediaSoup] Server Producer active! ID: ${producer.id} [Kind: ${kind}]`);
+
+      producer.on('transportclose', () => {
+        console.log(`[MediaSoup] Producer parent transport closed. Killing producer: ${producer.id}`);
+        producer.close();
+        producers.delete(producer.id);
+      });
+
+      // Pass the real generated ID back down to the client
+      return { id: producer.id };
     });
 
     socket.on('disconnect', () => {
