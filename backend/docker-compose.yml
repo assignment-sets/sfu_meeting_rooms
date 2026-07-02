@@ -1,0 +1,11 @@
+services:
+  mediasoup-redis:
+    image: redis:7-alpine
+    container_name: mediasoup-redis
+    restart: "no"
+    env_file:
+      - .env
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: >
+      sh -c "redis-server --requirepass $${REDIS_PASSWORD:-mediasoup_local_secure_pass_123!}"
