@@ -1,5 +1,7 @@
 // frontend/src/App.jsx
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { BrowserRouter, Routes, Route, Navigate, Link } from "react-router-dom";
+import { useAuth, SignIn, UserButton } from "@clerk/react";
 import { useMediaSoup } from "./hooks/useMediaSoup";
 import { ControlPanel } from "./components/ControlPanel";
 import { LogConsole } from "./components/LogConsole";
@@ -7,7 +9,7 @@ import { LogConsole } from "./components/LogConsole";
 const SIGNALING_SERVER_URL =
   "https://subturriculated-unpublicly-shari.ngrok-free.dev";
 
-function App() {
+function MediaSoupEngine() {
   const {
     connectionStatus,
     deviceStatus,
@@ -52,16 +54,24 @@ function App() {
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 font-sans p-6">
-      <header className="max-w-5xl mx-auto mb-8 border-b border-slate-800 pb-4">
-        <h1 className="text-3xl font-extrabold tracking-tight text-indigo-400">
-          MediaSoup Engine Integration{" "}
-          <span className="text-sm font-normal text-slate-400 bg-slate-800 px-2 py-1 rounded ml-2">
-            Sprint 5.1
-          </span>
-        </h1>
-        <p className="text-slate-400 mt-1">
-          Direct Stream Consumption & Rendering Loop
-        </p>
+      <header className="max-w-5xl mx-auto mb-8 border-b border-slate-800 pb-4 flex justify-between items-center">
+        <div>
+          <h1 className="text-3xl font-extrabold tracking-tight text-indigo-400">
+            MediaSoup Engine Integration{" "}
+            <span className="text-sm font-normal text-slate-400 bg-slate-800 px-2 py-1 rounded ml-2">
+              Sprint 5.1
+            </span>
+          </h1>
+          <p className="text-slate-400 mt-1">
+            Direct Stream Consumption & Rendering Loop
+          </p>
+        </div>
+        <div className="flex items-center gap-4">
+          <Link to="/test" className="text-sm font-semibold text-slate-400 hover:text-indigo-400 transition mr-2">
+            Test Route
+          </Link>
+          <UserButton afterSignOutUrl="/login" />
+        </div>
       </header>
 
       <main className="max-w-5xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -138,4 +148,133 @@ function App() {
   );
 }
 
+function TestPage() {
+  const { getToken } = useAuth();
+  const [response, setResponse] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const testAuthEndpoint = async () => {
+    setLoading(true);
+    setError(null);
+    setResponse(null);
+    try {
+      const token = await getToken();
+      const res = await fetch(`${SIGNALING_SERVER_URL}/api/test`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        }
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP Error: ${res.status} ${res.statusText}`);
+      }
+      const data = await res.json();
+      setResponse(data);
+    } catch (err) {
+      console.error(err);
+      setError(err.message || "Failed to query authenticated endpoint.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-900 text-slate-100 font-sans p-6">
+      <header className="max-w-5xl mx-auto mb-8 border-b border-slate-800 pb-4 flex justify-between items-center">
+        <div>
+          <h1 className="text-3xl font-extrabold tracking-tight text-indigo-400">
+            Auth Token Validator
+          </h1>
+          <p className="text-slate-400 mt-1">
+            Backend Identity verification check
+          </p>
+        </div>
+        <div className="flex items-center gap-4">
+          <Link to="/" className="text-sm font-semibold text-slate-400 hover:text-indigo-400 transition mr-2">
+            &larr; Back to Dashboard
+          </Link>
+          <UserButton afterSignOutUrl="/login" />
+        </div>
+      </header>
+
+      <main className="max-w-xl mx-auto bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-xl flex flex-col space-y-6">
+        <p className="text-slate-300 text-sm">
+          Click the button below to retrieve your current session JWT token from Clerk and perform a POST query to the backend test API.
+        </p>
+
+        <button
+          onClick={testAuthEndpoint}
+          disabled={loading}
+          className="w-full bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] disabled:opacity-50 text-white font-semibold py-3 px-4 rounded-xl shadow-lg transition duration-200 cursor-pointer"
+        >
+          {loading ? "Authenticating Request..." : "Test Authenticated Endpoint"}
+        </button>
+
+        {error && (
+          <div className="bg-rose-950/40 border border-rose-500/30 text-rose-300 p-4 rounded-xl text-sm font-medium">
+            Error: {error}
+          </div>
+        )}
+
+        {response && (
+          <div className="flex flex-col space-y-3">
+            <span className="text-xs font-semibold text-emerald-400 uppercase tracking-wider block">
+              Response from server
+            </span>
+            <div className="bg-slate-950 rounded-xl p-4 border border-slate-900 overflow-x-auto text-xs font-mono text-emerald-300">
+              <pre>{JSON.stringify(response, null, 2)}</pre>
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
+function LoginPage() {
+  return (
+    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6">
+      <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-2xl flex flex-col items-center">
+        <h2 className="text-2xl font-bold text-indigo-400 mb-6">AETHER Auth Gateway</h2>
+        <SignIn routing="path" path="/login" signUpUrl="/signup" />
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const { isLoaded, isSignedIn } = useAuth();
+
+  if (!isLoaded) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <span className="text-indigo-400 animate-pulse font-medium">Verifying Session...</span>
+      </div>
+    );
+  }
+
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route
+          path="/login/*"
+          element={isSignedIn ? <Navigate to="/" replace /> : <LoginPage />}
+        />
+        <Route
+          path="/test"
+          element={isSignedIn ? <TestPage /> : <Navigate to="/login" replace />}
+        />
+        <Route
+          path="/*"
+          element={isSignedIn ? <MediaSoupEngine /> : <Navigate to="/login" replace />}
+        />
+      </Routes>
+    </BrowserRouter>
+  );
+}
+
 export default App;
+
+
