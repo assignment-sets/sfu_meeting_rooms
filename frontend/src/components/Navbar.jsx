@@ -11,7 +11,7 @@ export function Navbar() {
   };
 
   // Determine standard path value to match select value properly
-  const currentValue = ["/", "/control-panel", "/test", "/create-room"].includes(location.pathname) 
+  const currentValue = ["/", "/test", "/create-room"].includes(location.pathname) 
     ? location.pathname 
     : "/";
 
@@ -25,7 +25,6 @@ export function Navbar() {
           className="bg-slate-900 border border-slate-700 text-slate-200 text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:border-indigo-500 cursor-pointer"
         >
           <option value="/">Home</option>
-          <option value="/control-panel">Control Panel</option>
           <option value="/test">Test Route</option>
           <option value="/create-room">Create Room</option>
         </select>
@@ -36,4 +35,5 @@ export function Navbar() {
     </nav>
   );
 }
+
 

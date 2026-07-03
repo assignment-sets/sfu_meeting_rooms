@@ -7,7 +7,6 @@ import RoomPage from "./pages/RoomPage";
 // Page imports from separate views
 import EmptyHome from "./pages/EmptyHome";
 import LoginPage from "./pages/LoginPage";
-import MediaSoupEngine from "./pages/MediaSoupEngine";
 import TestPage from "./pages/TestPage";
 import CreateRoomPage from "./pages/CreateRoomPage";
 
@@ -35,12 +34,6 @@ function App() {
           path="/"
           element={
             isSignedIn ? <EmptyHome /> : <Navigate to="/login" replace />
-          }
-        />
-        <Route
-          path="/control-panel"
-          element={
-            isSignedIn ? <MediaSoupEngine /> : <Navigate to="/login" replace />
           }
         />
         <Route
