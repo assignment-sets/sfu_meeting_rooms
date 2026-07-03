@@ -314,9 +314,9 @@ export const initializeSocketSignaling = (io) => {
     });
 
     // ==================================================================
-    // 9. EFFICIENT IN-MEMORY DISCONNECTION PURGE (NO DB CALLS)
+    // 8. EFFICIENT IN-MEMORY DISCONNECTION PURGE + DB BLUEPRINT CLEANUP
     // ==================================================================
-    socket.on('disconnect', () => {
+    socket.on('disconnect', async () => { // 🌟 Marked as async for Mongoose tracking
       const targetRoomId = socket.currentRoomId;
       const targetUserId = socket.userId;
 
@@ -350,6 +350,17 @@ export const initializeSocketSignaling = (io) => {
             transports.delete(transportId);
             console.log(`[Cleanup] Torn down in-memory WebRTC Transport: ${transportId}`);
           }
+        }
+
+        // 🌟 THE FULL CIRCLE FIX: Safely pull just this specific connection's row out of the database blueprint roster
+        try {
+          await Room.updateOne(
+            { roomId: targetRoomId },
+            { $pull: { members: { socketId: socket.id } } }
+          );
+          console.log(`[Database Sync] Successfully pulled dead connection ${socket.id} from blueprint roster.`);
+        } catch (dbErr) {
+          console.error(`[Database Error] Failed roster evacuation:`, dbErr.message);
         }
 
         // 4. Alert remaining room peers to teardown UI elements instantly

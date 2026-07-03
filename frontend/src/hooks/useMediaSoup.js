@@ -46,6 +46,15 @@ export const useMediaSoup = (serverUrl, roomId, clerkToken) => {
 
     // --- REAL-TIME BROADCAST EVENT LISTENERS ---
 
+    socketInstance.on('newPeerJoined', ({ userId }) => {
+      addLog(`Broadcast received: Peer ${userId} entered the room silent. Spawning layout container.`, 'info');
+      setRemoteFeeds((prev) => {
+        // Prevent duplicate containers if they are already in the array
+        if (prev.some((feed) => feed.userId === userId)) return prev;
+        return [...prev, { userId, videoTrack: null, audioTrack: null }];
+      });
+    });
+
     // Catch when a peer turns on their camera or microphone dynamically
     socketInstance.on('newProducerAvailable', async ({ producerId, userId, kind }) => {
       addLog(`Broadcast received: New ${kind} producer available from user ${userId}`, 'warning');
@@ -104,6 +113,19 @@ export const useMediaSoup = (serverUrl, roomId, clerkToken) => {
             resolve();
           });
         });
+
+        // Instantly seed the layout matrix with EVERY remote member found in the DB blueprint
+
+        const baseFeeds = currentMembers
+          .filter((member) => member.socketId !== socket.id) // FIX: Compares socket IDs natively on the client
+          .map((member) => ({
+            userId: member.userId,
+            videoTrack: null,
+            audioTrack: null
+          }));
+
+        setRemoteFeeds(baseFeeds);
+        addLog(`Layout matrix hydrated with ${baseFeeds.length} existing room members.`, 'success');
 
         // We initialize ONLY consumption pipe. Local production is left unallocated.
         await initializeLocalConsumption(targetRoomId);
