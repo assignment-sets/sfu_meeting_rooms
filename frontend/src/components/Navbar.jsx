@@ -11,7 +11,7 @@ export function Navbar() {
   };
 
   // Determine standard path value to match select value properly
-  const currentValue = ["/", "/control-panel", "/test"].includes(location.pathname) 
+  const currentValue = ["/", "/control-panel", "/test", "/create-room"].includes(location.pathname) 
     ? location.pathname 
     : "/";
 
@@ -27,6 +27,7 @@ export function Navbar() {
           <option value="/">Home</option>
           <option value="/control-panel">Control Panel</option>
           <option value="/test">Test Route</option>
+          <option value="/create-room">Create Room</option>
         </select>
       </div>
       <div>
@@ -35,3 +36,4 @@ export function Navbar() {
     </nav>
   );
 }
+
