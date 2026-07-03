@@ -1,9 +1,10 @@
+// backend/socket-manager.js
 import { config } from './config.js';
 import { Room } from './models/Room.js';
 import { clerkClient } from './lib/clerk.js';
-import { redisClient } from './lib/redis.js';
 import { activeRouters } from './server.js';
 
+// Live C++ engine allocation mappings held entirely in server memory
 const transports = new Map();
 const producers = new Map();
 const consumers = new Map();
@@ -34,7 +35,7 @@ const createMediaSoupWebRtcTransport = async (router) => {
 
 export const initializeSocketSignaling = (io) => {
 
-  // Auth Middleware
+  // Auth Middleware (Clerk Handshake Verification)
   io.use(async (socket, next) => {
     try {
       const token = socket.handshake.auth.token || socket.handshake.headers['authorization'];
@@ -48,6 +49,8 @@ export const initializeSocketSignaling = (io) => {
         secretKey: process.env.CLERK_SECRET_KEY,
       });
       if (!requestState.isAuthenticated) return next(new Error('Authentication failure.'));
+
+      // Bind Clerk Identity safely to the Node runtime socket layer instance
       socket.userId = requestState.toAuth().userId;
       next();
     } catch (err) {
@@ -85,7 +88,7 @@ export const initializeSocketSignaling = (io) => {
     });
 
     // ==================================================================
-    // 1. JOIN ROOM (BROADCASTS NEW USER EVENT)
+    // 1. JOIN ROOM (PERSISTENT HISTORICAL INGRESS LOG)
     // ==================================================================
     handleEvent('joinRoom', async (data, clientSocket) => {
       const { roomId } = data;
@@ -94,8 +97,10 @@ export const initializeSocketSignaling = (io) => {
       const targetRoom = await Room.findOne({ roomId });
       if (!targetRoom) throw new Error('Room not found.');
 
+      // Clear any prior session reference for this explicit user to prevent duplicate cluster rows
       await Room.updateOne({ roomId }, { $pull: { members: { userId: clientSocket.userId } } });
 
+      // Save user entry historically. If they rejoin later, this appends their brand new socket details cleanly
       const updatedState = await Room.findOneAndUpdate(
         { roomId },
         {
@@ -110,26 +115,24 @@ export const initializeSocketSignaling = (io) => {
             }
           }
         },
-        { new: true }
+        { returnDocument: 'after' } // Cleared Mongoose deprecation warning
       );
 
-      await redisClient.hSet(`socket:${clientSocket.id}`, { userId: clientSocket.userId, roomId });
-
+      // Save routing coordinates directly inside server runtime memory context
       clientSocket.join(roomId);
       clientSocket.currentRoomId = roomId;
 
-      // ─── MULTI-USER BROADCAST PING ───
-      // Notify existing users in the room that a new peer joined
+      // Notify existing peers
       clientSocket.to(roomId).emit('newPeerJoined', {
         userId: clientSocket.userId,
         socketId: clientSocket.id
       });
 
-      console.log(`[Room Sync] User ${clientSocket.userId} joined room: ${roomId}`);
+      console.log(`[Room Sync] User ${clientSocket.userId} logged historically into room: ${roomId}`);
 
       return {
         roomId,
-        currentMembers: updatedState.members // New user gets full state layout list
+        currentMembers: updatedState.members
       };
     });
 
@@ -142,6 +145,9 @@ export const initializeSocketSignaling = (io) => {
 
       const roomRouter = getRoomRouter(clientSocket);
       const transport = await createMediaSoupWebRtcTransport(roomRouter);
+
+      // TAG FOR MEMORY CLEANUP: Store ownership metadata inside the C++ wrapper object
+      transport.appData = { socketId: clientSocket.id, userId: clientSocket.userId };
       transports.set(transport.id, transport);
 
       await Room.updateOne(
@@ -169,7 +175,7 @@ export const initializeSocketSignaling = (io) => {
     });
 
     // ==================================================================
-    // 4. PRODUCE STREAM TRAFFIC (BROADCASTS NEW PRODUCER SIGNAL)
+    // 4. PRODUCE STREAM TRAFFIC
     // ==================================================================
     handleEvent('produceMediaStream', async (data, clientSocket) => {
       const { transportId, kind, rtpParameters, roomId } = data;
@@ -177,6 +183,9 @@ export const initializeSocketSignaling = (io) => {
       if (!transport) throw new Error('Send transport pipeline dead.');
 
       const producer = await transport.produce({ kind, rtpParameters });
+
+      // TAG FOR MEMORY CLEANUP: Store ownership metadata inside the producer instance
+      producer.appData = { socketId: clientSocket.id, userId: clientSocket.userId };
       producers.set(producer.id, producer);
 
       const updateField = kind === 'video' ? "members.$.videoProducerId" : "members.$.audioProducerId";
@@ -185,8 +194,6 @@ export const initializeSocketSignaling = (io) => {
         { $set: { [updateField]: producer.id } }
       );
 
-      // ─── MULTI-USER BROADCAST PING ───
-      // Tell everyone else in this room to instantly consume this new track!
       clientSocket.to(roomId).emit('newProducerAvailable', {
         producerId: producer.id,
         userId: clientSocket.userId,
@@ -212,6 +219,9 @@ export const initializeSocketSignaling = (io) => {
 
       const roomRouter = getRoomRouter(clientSocket);
       const transport = await createMediaSoupWebRtcTransport(roomRouter);
+
+      // TAG FOR MEMORY CLEANUP: Store ownership metadata inside the receiver transport wrapper
+      transport.appData = { socketId: clientSocket.id, userId: clientSocket.userId };
       transports.set(transport.id, transport);
 
       await Room.updateOne(
@@ -240,6 +250,9 @@ export const initializeSocketSignaling = (io) => {
       if (!canConsume) throw new Error('Codec capability match failed.');
 
       const consumer = await transport.consume({ producerId, rtpCapabilities, paused: true });
+
+      // TAG FOR MEMORY CLEANUP: Store ownership metadata inside the consumer tracking row
+      consumer.appData = { socketId: clientSocket.id, userId: clientSocket.userId };
       consumers.set(consumer.id, consumer);
 
       consumer.on('transportclose', () => {
@@ -267,34 +280,52 @@ export const initializeSocketSignaling = (io) => {
     });
 
     // ==================================================================
-    // 8. DISCONNECTION CLEANUP (BROADCASTS EXIT SIGNAL)
+    // 8. EFFICIENT IN-MEMORY DISCONNECTION PURGE (NO DB CALLS)
     // ==================================================================
-    socket.on('disconnect', async () => {
-      console.log(`[Signaling] Drop Out: ${socket.id}`);
+    socket.on('disconnect', () => {
+      const targetRoomId = socket.currentRoomId;
+      const targetUserId = socket.userId;
 
-      const lookupSession = await redisClient.hGetAll(`socket:${socket.id}`);
+      console.log(`[Signaling] Drop Out Detected: ${socket.id} (${targetUserId})`);
 
-      if (lookupSession && lookupSession.roomId) {
-        const targetRoomId = lookupSession.roomId;
-        const targetUserId = lookupSession.userId;
+      if (targetRoomId) {
+        console.log(`[MediaSoup Cleanup] Commencing rapid memory evacuation for User: ${targetUserId}`);
 
-        // Remove from DB
-        await Room.updateOne(
-          { roomId: targetRoomId },
-          { $pull: { members: { socketId: socket.id } } }
-        );
+        // 1. Purge memory map references for Producers owned by this explicit socket
+        for (const [producerId, producer] of producers.entries()) {
+          if (producer.appData?.socketId === socket.id || producer.closed) {
+            producer.close();
+            producers.delete(producerId);
+            console.log(`[Cleanup] Purged memory Map record for Producer: ${producerId}`);
+          }
+        }
 
-        // ─── MULTI-USER BROADCAST PING ───
-        // Tell everyone else in the room to instantly drop this user's video boxes
+        // 2. Purge memory map references for Consumers owned by this explicit socket
+        for (const [consumerId, consumer] of consumers.entries()) {
+          if (consumer.appData?.socketId === socket.id || consumer.closed) {
+            consumer.close();
+            consumers.delete(consumerId);
+            console.log(`[Cleanup] Purged memory Map record for Consumer: ${consumerId}`);
+          }
+        }
+
+        // 3. Destroy WebRTC Transport engines and C++ pipeline configurations owned by this explicit socket
+        for (const [transportId, transport] of transports.entries()) {
+          if (transport.appData?.socketId === socket.id || transport.closed) {
+            transport.close();
+            transports.delete(transportId);
+            console.log(`[Cleanup] Torn down in-memory WebRTC Transport: ${transportId}`);
+          }
+        }
+
+        // 4. Alert remaining room peers to teardown UI elements instantly
         io.to(targetRoomId).emit('peerDisconnected', {
           userId: targetUserId,
           socketId: socket.id
         });
 
-        console.log(`[Ecosystem Sync] Cleaned room tables for: ${targetRoomId}`);
+        console.log(`[Ecosystem Sync] Server memory footprint successfully cleared for room: ${targetRoomId}`);
       }
-
-      await redisClient.del(`socket:${socket.id}`);
     });
   });
 };
