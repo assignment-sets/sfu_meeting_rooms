@@ -99,22 +99,6 @@ app.post('/api/rooms/create', requireAuth, async (req, res) => {
   }
 });
 
-// ------------------------------------------------------------------
-// TEST REST ENDPOINT
-// ------------------------------------------------------------------
-app.post('/api/test', requireAuth, (req, res) => {
-  // Logs the user payload safely to your console
-  console.log('--- Authenticated User Request ---');
-  console.log(req.user);
-  console.log('---------------------------------');
-
-  res.status(200).json({
-    message: 'Authentication successful!',
-    user: req.user
-  });
-});
-
-
 // Update startApp to remove the global router initialization
 const startApp = async () => {
   try {

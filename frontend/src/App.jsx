@@ -7,7 +7,6 @@ import RoomPage from "./pages/RoomPage";
 // Page imports from separate views
 import EmptyHome from "./pages/EmptyHome";
 import LoginPage from "./pages/LoginPage";
-import TestPage from "./pages/TestPage";
 import CreateRoomPage from "./pages/CreateRoomPage";
 
 function App() {
@@ -35,10 +34,6 @@ function App() {
           element={
             isSignedIn ? <EmptyHome /> : <Navigate to="/login" replace />
           }
-        />
-        <Route
-          path="/test"
-          element={isSignedIn ? <TestPage /> : <Navigate to="/login" replace />}
         />
         <Route
           path="/create-room"
