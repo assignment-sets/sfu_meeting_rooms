@@ -51,7 +51,7 @@ const RoomSchema = new mongoose.Schema({
   members: [MemberSchema],
 }, { 
   timestamps: true,
-  collection: 'vidCallingApp'
+  collection: 'mediaSoupVidcall'
 });
 
 export const Room = mongoose.model('Room', RoomSchema);
