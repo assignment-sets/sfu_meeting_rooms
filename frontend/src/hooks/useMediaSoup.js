@@ -18,6 +18,9 @@ export const useMediaSoup = (serverUrl, roomId, clerkToken) => {
   const consumerTransportRef = useRef(null);
   const localStreamRef = useRef(null);
 
+  const localVideoProducerRef = useRef(null);
+  const localAudioProducerRef = useRef(null);
+
   const addLog = (message, type = 'info') => {
     const timestamp = new Date().toLocaleTimeString();
     setLogs((prev) => [{ timestamp, message, type }, ...prev]);
@@ -43,19 +46,32 @@ export const useMediaSoup = (serverUrl, roomId, clerkToken) => {
 
     // --- REAL-TIME BROADCAST EVENT LISTENERS ---
 
-    // Catch when a newcomer turns on their camera or microphone
+    // Catch when a peer turns on their camera or microphone dynamically
     socketInstance.on('newProducerAvailable', async ({ producerId, userId, kind }) => {
       addLog(`Broadcast received: New ${kind} producer available from user ${userId}`, 'warning');
-
-      // Automatically extract and append the specific track type
       await consumeTargetTrack(producerId, userId, kind);
     });
 
-    // Catch when someone drops out or closes their browser tab
+    // Catch when a peer explicitly turns OFF just their camera or mic (Strategy 3 Broadcast)
+    socketInstance.on('peerStoppedProducer', ({ userId, kind }) => {
+      addLog(`Broadcast received: User ${userId} stopped streaming ${kind}`, 'info');
+      setRemoteFeeds((prev) =>
+        prev.map((f) => {
+          if (f.userId === userId) {
+            return {
+              ...f,
+              videoTrack: kind === 'video' ? null : f.videoTrack,
+              audioTrack: kind === 'audio' ? null : f.audioTrack
+            };
+          }
+          return f;
+        })
+      );
+    });
+
+    // Catch when someone drops out entirely
     socketInstance.on('peerDisconnected', ({ socketId, userId }) => {
       addLog(`Broadcast received: Peer ${userId} left the environment.`, 'warning');
-
-      // Clean up the UI state completely based on their static, unique userId
       setRemoteFeeds((prev) => prev.filter((feed) => feed.userId !== userId));
     });
 
@@ -64,7 +80,7 @@ export const useMediaSoup = (serverUrl, roomId, clerkToken) => {
     };
   }, [serverUrl, roomId, clerkToken]);
 
-  // 2. The Core Room Entry Sequence
+  // 2. The Core Room Entry Sequence (Passively Consume First)
   const executeRoomIngress = (targetRoomId) => {
     const socket = socketRef.current;
 
@@ -74,11 +90,11 @@ export const useMediaSoup = (serverUrl, roomId, clerkToken) => {
         return;
       }
 
-      addLog('Ingress authorized. Allocating local media hardware engine...', 'info');
+      addLog('Ingress authorized. Allocating local consumer hardware engine...', 'info');
       const { currentMembers } = response.data;
 
       try {
-        // Load the device engine layout parameters
+        // Load the device engine layer parameters
         await new Promise((resolve, reject) => {
           socket.emit('getRouterRtpCapabilities', {}, async (rtpResp) => {
             if (!rtpResp.success) return reject(new Error(rtpResp.error));
@@ -89,23 +105,16 @@ export const useMediaSoup = (serverUrl, roomId, clerkToken) => {
           });
         });
 
-        // Initialize local capture (Audio + Video) and send transport pipe
-        await initializeLocalProduction(targetRoomId);
-
-        // Initialize empty receive transport pipe to accept incoming traffic
+        // We initialize ONLY consumption pipe. Local production is left unallocated.
         await initializeLocalConsumption(targetRoomId);
 
-        // Loop through everyone ALREADY inside the room and extract their streams immediately
+        // Extract any existing tracks from users already in the room
         for (const member of currentMembers) {
           if (member.userId !== socket.userId) {
-            // Catch existing video tracks
             if (member.videoProducerId) {
-              addLog(`Found existing video track for user: ${member.userId}. Extracting...`, 'info');
               await consumeTargetTrack(member.videoProducerId, member.userId, 'video');
             }
-            // Catch existing audio tracks
             if (member.audioProducerId) {
-              addLog(`Found existing audio track for user: ${member.userId}. Extracting...`, 'info');
               await consumeTargetTrack(member.audioProducerId, member.userId, 'audio');
             }
           }
@@ -114,61 +123,6 @@ export const useMediaSoup = (serverUrl, roomId, clerkToken) => {
       } catch (err) {
         setErrorLog(`Pipeline automation failure: ${err.message}`);
       }
-    });
-  };
-
-  const initializeLocalProduction = async (targetRoomId) => {
-    const socket = socketRef.current;
-
-    return new Promise((resolve, reject) => {
-      socket.emit('createWebRtcTransport', { roomId: targetRoomId }, async (transportResp) => {
-        if (!transportResp.success) return reject(new Error(transportResp.error));
-
-        const transport = deviceRef.current.createSendTransport(transportResp.data);
-
-        transport.on('connect', async ({ dtlsParameters }, callback, errback) => {
-          socket.emit('connectWebRtcTransport', { transportId: transport.id, dtlsParameters }, (res) => res.success ? callback() : errback(new Error(res.error)));
-        });
-
-        transport.on('produce', async ({ kind, rtpParameters }, callback, errback) => {
-          socket.emit('produceMediaStream', { roomId: targetRoomId, transportId: transport.id, kind, rtpParameters }, (res) => res.success ? callback({ id: res.data.id }) : errback(new Error(res.error)));
-        });
-
-        producerTransportRef.current = transport;
-
-        // ENABLED BOTH CHANNELS: Capture camera AND microphone hardware tracks natively
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: {
-            echoCancellation: true,      // Kills speaker-to-mic feedback loops instantly
-            noiseSuppression: true,      // Filters out laptop fans and room hums
-            autoGainControl: true,       // Dynamically normalizes volume so you sound clear
-            channelCount: 1,             // Forces mono (speech codecs handle mono way better than stereo)
-            sampleRate: 48000,           // Sets full studio/VoIP audio frequency
-            ideal: {
-              latency: 0.01              // Minimizes hardware buffer delays
-            }
-          }
-        });
-        localStreamRef.current = stream;
-        setMediaStatus('Streaming Live');
-
-        // 1. Publish Video Track
-        const videoTrack = stream.getVideoTracks()[0];
-        if (videoTrack) {
-          await transport.produce({ track: videoTrack });
-          addLog('Local video track published successfully.', 'success');
-        }
-
-        // 2. Publish Audio Track
-        const audioTrack = stream.getAudioTracks()[0];
-        if (audioTrack) {
-          await transport.produce({ track: audioTrack });
-          addLog('Local audio track published successfully.', 'success');
-        }
-
-        resolve();
-      });
     });
   };
 
@@ -191,6 +145,135 @@ export const useMediaSoup = (serverUrl, roomId, clerkToken) => {
     });
   };
 
+  // ==================================================================
+  // DYNAMIC LAZY PIPELINE GENERATOR
+  // ==================================================================
+
+  const ensureSendTransportCreated = async () => {
+    // If the pipeline is already built and authenticated, skip creation entirely
+    if (producerTransportRef.current) return producerTransportRef.current;
+
+    const socket = socketRef.current;
+    addLog('Building dynamic outbound WebRTC transport pipeline...', 'info');
+
+    return new Promise((resolve, reject) => {
+      socket.emit('createWebRtcTransport', { roomId }, async (transportResp) => {
+        if (!transportResp.success) return reject(new Error(transportResp.error));
+
+        const transport = deviceRef.current.createSendTransport(transportResp.data);
+
+        transport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+          socket.emit('connectWebRtcTransport', { transportId: transport.id, dtlsParameters }, (res) => res.success ? callback() : errback(new Error(res.error)));
+        });
+
+        transport.on('produce', async ({ kind, rtpParameters }, callback, errback) => {
+          socket.emit('produceMediaStream', { roomId, transportId: transport.id, kind, rtpParameters }, (res) => res.success ? callback({ id: res.data.id }) : errback(new Error(res.error)));
+        });
+
+        producerTransportRef.current = transport;
+        addLog('Dynamic outbound transport pipeline secured.', 'success');
+        resolve(transport);
+      });
+    });
+  };
+
+  const startLocalTrack = async (kind) => {
+    try {
+      // 1. Ensure the outbound pipe is fully built and ready
+      const transport = await ensureSendTransportCreated();
+
+      addLog(`Requesting local device hardware access for: ${kind}...`, 'info');
+
+      // 2. Fetch specific channel hardware with strict VoiceEngine constraints
+      const constraints = {
+        video: kind === 'video',
+        audio: kind === 'audio' ? {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+          sampleRate: 48000,
+          ideal: { latency: 0.01 }
+        } : false
+      };
+
+      const freshStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+      // Lazily seed the baseline local compound stream if not already allocated
+      if (!localStreamRef.current) {
+        localStreamRef.current = new MediaStream();
+      }
+
+      if (kind === 'video') {
+        const videoTrack = freshStream.getVideoTracks()[0];
+        localStreamRef.current.addTrack(videoTrack);
+
+        // Inject the video track into the WebRTC pipeline
+        const producer = await transport.produce({ track: videoTrack });
+        localVideoProducerRef.current = producer;
+
+        setMediaStatus((prev) => prev === 'Audio Streaming' ? 'Fully Active' : 'Video Streaming');
+        addLog('Dynamic local video channel published.', 'success');
+      }
+
+      else if (kind === 'audio') {
+        const audioTrack = freshStream.getAudioTracks()[0];
+        localStreamRef.current.addTrack(audioTrack);
+
+        // Inject the audio track into the WebRTC pipeline
+        const producer = await transport.produce({ track: audioTrack });
+        localAudioProducerRef.current = producer;
+
+        setMediaStatus((prev) => prev === 'Video Streaming' ? 'Fully Active' : 'Audio Streaming');
+        addLog('Dynamic local audio voice channel published.', 'success');
+      }
+
+    } catch (err) {
+      setErrorLog(`Failed to dynamic-start ${kind} stream: ${err.message}`);
+    }
+  };
+
+  const stopLocalTrack = async (kind) => {
+    const socket = socketRef.current;
+    addLog(`Executing Strategy 3 hardware teardown for channel: ${kind}`, 'warning');
+
+    if (kind === 'video' && localVideoProducerRef.current) {
+      // 1. Destroy client-side MediaSoup instance to break WebRTC packet generation
+      localVideoProducerRef.current.close();
+      localVideoProducerRef.current = null;
+
+      // 2. Locate the hardware track, cut power, and extinguish the laptop device light
+      const videoTrack = localStreamRef.current?.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.stop();
+        localStreamRef.current.removeTrack(videoTrack);
+      }
+
+      setMediaStatus((prev) => prev === 'Fully Active' ? 'Audio Streaming' : 'No Media');
+    }
+
+    else if (kind === 'audio' && localAudioProducerRef.current) {
+      // 1. Destroy client-side MediaSoup voice stream instance
+      localAudioProducerRef.current.close();
+      localAudioProducerRef.current = null;
+
+      // 2. Cut power completely to microphone input node
+      const audioTrack = localStreamRef.current?.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.stop();
+        localStreamRef.current.removeTrack(audioTrack);
+      }
+
+      setMediaStatus((prev) => prev === 'Fully Active' ? 'Video Streaming' : 'No Media');
+    }
+
+    // 3. Signal to clean server maps and issue broadcast pings to peers
+    socket.emit('stopMediaStream', { kind, roomId });
+    addLog(`Local ${kind} engine completely unallocated.`, 'info');
+  };
+
+  // ==================================================================
+
   const consumeTargetTrack = async (producerId, userId, kind) => {
     const socket = socketRef.current;
     if (!consumerTransportRef.current) return;
@@ -209,12 +292,10 @@ export const useMediaSoup = (serverUrl, roomId, clerkToken) => {
         if (resumeResp.success) {
           const incomingTrack = consumer.track;
 
-          // Unified State Orchestration: Map both tracks into the specific userId bucket
           setRemoteFeeds((prev) => {
             const existingFeed = prev.find((f) => f.userId === userId);
 
             if (existingFeed) {
-              // Update the specific track within the existing peer record
               return prev.map((f) => {
                 if (f.userId === userId) {
                   return {
@@ -226,7 +307,6 @@ export const useMediaSoup = (serverUrl, roomId, clerkToken) => {
                 return f;
               });
             } else {
-              // Construct a completely fresh user wrapper profile for the first incoming track
               return [
                 ...prev,
                 {
@@ -250,6 +330,8 @@ export const useMediaSoup = (serverUrl, roomId, clerkToken) => {
     remoteFeeds,
     localStreamRef,
     errorLog,
-    logs
+    logs,
+    startLocalTrack, // Exposed action button method
+    stopLocalTrack   // Exposed action button method
   };
 };

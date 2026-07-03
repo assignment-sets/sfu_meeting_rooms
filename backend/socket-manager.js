@@ -280,7 +280,41 @@ export const initializeSocketSignaling = (io) => {
     });
 
     // ==================================================================
-    // 8. EFFICIENT IN-MEMORY DISCONNECTION PURGE (NO DB CALLS)
+    // 8. STOP STREAM TRAFFIC (STRATEGY 3 DYNAMIC TRACK TEARDOWN)
+    // ==================================================================
+    handleEvent('stopMediaStream', async (data, clientSocket) => {
+      const { kind, roomId } = data;
+      if (!roomId || clientSocket.currentRoomId !== roomId) throw new Error('Boundary error.');
+
+      console.log(`[MediaSoup] User ${clientSocket.userId} toggled OFF their ${kind} stream.`);
+
+      // 1. Locate and destroy the live C++ media pipe for this explicit track kind
+      for (const [producerId, producer] of producers.entries()) {
+        if (producer.appData?.socketId === clientSocket.id && producer.kind === kind) {
+          producer.close();
+          producers.delete(producerId);
+          console.log(`[Cleanup] Purged active ${kind} producer from memory: ${producerId}`);
+        }
+      }
+
+      // 2. Nullify the track ID in MongoDB so future newcomers don't attempt extraction
+      const updateField = kind === 'video' ? "members.$.videoProducerId" : "members.$.audioProducerId";
+      await Room.updateOne(
+        { roomId, "members.userId": clientSocket.userId },
+        { $set: { [updateField]: null } }
+      );
+
+      // 3. Broadcast the Strategy 3 teardown ping to all active room peers
+      clientSocket.to(roomId).emit('peerStoppedProducer', {
+        userId: clientSocket.userId,
+        kind
+      });
+
+      return true;
+    });
+
+    // ==================================================================
+    // 9. EFFICIENT IN-MEMORY DISCONNECTION PURGE (NO DB CALLS)
     // ==================================================================
     socket.on('disconnect', () => {
       const targetRoomId = socket.currentRoomId;
